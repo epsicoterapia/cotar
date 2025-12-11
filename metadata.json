@@ -1,0 +1,5 @@
+{
+  "name": "ExchangeLink",
+  "description": "A specialized communication tool connecting the fiat and crypto worlds. Allows USA and Bitcoin entities to broadcast real-time exchange rates via simulated push notifications.",
+  "requestFramePermissions": []
+}
