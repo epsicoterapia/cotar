@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { UserRole, NotificationLog } from '../types';
 import { fetchBitcoinRate, fetchUSDRate } from '../services/api';
-import { p2pService } from '../services/p2p';
-import { Send, RefreshCcw, ArrowLeft, CheckCircle, Activity, Settings, X, Trash2, Smartphone, Server, Wifi, WifiOff } from 'lucide-react';
+import { p2pService, P2PMessage } from '../services/p2p';
+import { Send, RefreshCcw, ArrowLeft, CheckCircle, Activity, Settings, X, Trash2, Smartphone, Server, Wifi, WifiOff, AlertTriangle, Loader2 } from 'lucide-react';
 
 interface DashboardProps {
   role: UserRole;
@@ -17,9 +17,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ role, myId, partnerId, onB
   const [loading, setLoading] = useState(false);
   const [logs, setLogs] = useState<NotificationLog[]>([]);
   const [showSettings, setShowSettings] = useState(false);
+  const [isRetrying, setIsRetrying] = useState(false);
 
   const isUSA = role === UserRole.USA;
-  const isOnline = p2pStatus === 'online';
+  // Status is considered "good" if strictly connected
+  const isConnected = p2pStatus === 'connected';
+  const isConnecting = p2pStatus === 'connecting';
   
   // Theme configurations based on role
   const theme = isUSA
@@ -42,6 +45,40 @@ export const Dashboard: React.FC<DashboardProps> = ({ role, myId, partnerId, onB
         label: 'BTC'
       };
 
+  useEffect(() => {
+    // Attempt to connect immediately when dashboard loads
+    p2pService.connectToPartner(partnerId);
+
+    // Listen for incoming messages to update the log
+    p2pService.onMessage((msg: P2PMessage) => {
+        if (msg.type === 'RATE_UPDATE') {
+            const newLog: NotificationLog = {
+                id: Date.now().toString(),
+                from: msg.senderRole === 'USA' ? UserRole.USA : UserRole.BITCOIN,
+                message: `Recebido: ${msg.content}`,
+                timestamp: new Date(),
+                type: 'success'
+            };
+            setLogs(prev => [newLog, ...prev]);
+        }
+    });
+
+    // Re-attempt connection every 10 seconds if disconnected
+    const interval = setInterval(() => {
+        if (p2pStatus === 'disconnected' || p2pStatus === 'error') {
+            p2pService.connectToPartner(partnerId);
+        }
+    }, 10000);
+
+    return () => clearInterval(interval);
+  }, [partnerId, p2pStatus]);
+
+  const handleRetryConnection = () => {
+      setIsRetrying(true);
+      p2pService.connectToPartner(partnerId);
+      setTimeout(() => setIsRetrying(false), 2000);
+  };
+
   const handleAction = async () => {
     setLoading(true);
     try {
@@ -58,7 +95,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ role, myId, partnerId, onB
       }
 
       // 2. Use P2P Service to send Real Data
-      await p2pService.sendData(partnerId, {
+      // Note: We don't pass partnerId here anymore, the service knows the active connection
+      await p2pService.sendData({
         type: 'RATE_UPDATE',
         content: formattedRate,
         senderId: myId,
@@ -75,16 +113,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ role, myId, partnerId, onB
       };
       setLogs(prev => [newLog, ...prev]);
 
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
       const errorLog: NotificationLog = {
         id: Date.now().toString(),
         from: role,
-        message: 'Falha: Parceiro não encontrado ou offline.',
+        message: 'Erro ao enviar. O parceiro está online?',
         timestamp: new Date(),
         type: 'error'
       };
       setLogs(prev => [errorLog, ...prev]);
+      alert("Não foi possível enviar. Verifique se o outro celular está com a tela ligada e no app.");
     } finally {
       setLoading(false);
     }
@@ -106,9 +145,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ role, myId, partnerId, onB
 
         <div className="flex items-center gap-2">
             {/* Status Indicator */}
-            <div className={`px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1 ${isOnline ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                {isOnline ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
-                {isOnline ? 'P2P Online' : 'Offline'}
+            <div 
+                onClick={handleRetryConnection}
+                className={`cursor-pointer px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1 transition-colors ${isConnected ? 'bg-green-100 text-green-700' : (isConnecting ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700')}`}
+            >
+                {isConnected ? <Wifi className="w-3 h-3" /> : (isConnecting ? <Loader2 className="w-3 h-3 animate-spin" /> : <WifiOff className="w-3 h-3" />)}
+                {isConnected ? 'Conectado' : (isConnecting ? 'Conectando...' : 'Desconectado')}
             </div>
 
             {/* Settings Button */}
@@ -132,14 +174,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ role, myId, partnerId, onB
 
           <button
             onClick={handleAction}
-            disabled={loading || !isOnline}
-            className={`w-full group relative overflow-hidden py-5 px-6 rounded-xl font-bold text-lg text-white shadow-lg transition-all duration-300 transform active:scale-95 disabled:opacity-70 disabled:cursor-not-allowed ${theme.primary}`}
+            disabled={loading || !isConnected}
+            className={`w-full group relative overflow-hidden py-5 px-6 rounded-xl font-bold text-lg text-white shadow-lg transition-all duration-300 transform active:scale-95 disabled:opacity-50 disabled:grayscale ${theme.primary}`}
           >
             <div className="relative z-10 flex items-center justify-center gap-3">
               {loading ? (
                 <>
                   <RefreshCcw className="w-6 h-6 animate-spin" />
-                  <span>Enviando P2P...</span>
+                  <span>Enviando...</span>
                 </>
               ) : (
                 <>
@@ -151,12 +193,19 @@ export const Dashboard: React.FC<DashboardProps> = ({ role, myId, partnerId, onB
               )}
             </div>
           </button>
-          {!isOnline && (
-              <p className="mt-3 text-xs text-red-500 font-medium">Conexão P2P indisponível. Verifique a internet.</p>
+          
+          {!isConnected && (
+              <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-yellow-600 shrink-0 mt-0.5" />
+                  <p className="text-xs text-yellow-700 text-left">
+                      Aguardando conexão com o parceiro. Certifique-se que o outro celular está <strong>aberto nesta tela</strong>.
+                      <button onClick={handleRetryConnection} className="underline font-bold ml-1">Tentar reconectar</button>
+                  </p>
+              </div>
           )}
         </div>
 
-        {/* Transmission Log (Minimal) */}
+        {/* Transmission Log */}
         <div className="w-full space-y-3">
           {logs.map((log) => (
             <div 
@@ -213,6 +262,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ role, myId, partnerId, onB
                   ID Parceiro
                 </div>
                 <div className="font-mono text-lg font-bold tracking-wider">{partnerId}</div>
+              </div>
+
+              <div className="text-xs opacity-60 text-center">
+                  Status da Conexão: <span className="font-bold">{p2pStatus}</span>
               </div>
 
               <button 
